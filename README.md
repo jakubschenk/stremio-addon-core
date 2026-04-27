@@ -43,7 +43,7 @@ The crate includes GitHub Actions workflows:
 - `.github/workflows/ci.yml`: runs on pushes, pull requests, and manual dispatch. It checks formatting, `cargo check`, clippy, tests, and `cargo package`.
 - `.github/workflows/release.yml`: runs on `v*.*.*` tags or manual dispatch. It repeats validation, runs `cargo publish --dry-run`, then publishes to crates.io when triggered by a matching tag or manual `publish=true`.
 
-CI uses Rust 1.85.0, matching the crate `rust-version`. This is required because the current locked dependency graph includes crates that use Cargo's stabilized edition 2024 support.
+CI uses Rust 1.88.0, matching the crate `rust-version`. This is required because the current locked dependency graph includes crates whose declared MSRV is 1.88.
 
 Crates.io publishing requires a repository secret:
 
