@@ -162,7 +162,6 @@ pub fn build_router_with_options(
     if options.alias_routes {
         router = router
             .route("/", get(manifest))
-            .route("/index.php", get(manifest))
             .route("/stremio/manifest.json", get(manifest))
             .route("/api/manifest", get(manifest));
     }
@@ -610,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manifest_accepts_sosac_style_path_key() {
+    async fn manifest_accepts_path_key() {
         let app = build_router(Arc::new(DummyAdapter), AuthConfig::required("secret"));
         let response = app
             .oneshot(
@@ -623,6 +622,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn manifest_does_not_mount_php_alias() {
+        let app = build_router(Arc::new(DummyAdapter), AuthConfig::required("secret"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/index.php?authKey=secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -642,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_post_accepts_hellspy_style_body_and_key_alias() {
+    async fn stream_post_accepts_body_and_key_alias() {
         let app = build_router(Arc::new(DummyAdapter), AuthConfig::required("secret"));
         let response = app
             .oneshot(

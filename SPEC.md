@@ -8,9 +8,9 @@ This document defines the reusable protocol base for Stremio addon servers. It i
 
 - Provide a reusable Rust base for multiple Stremio provider addons.
 - Preserve official Stremio protocol routes.
-- Support local compatibility routes used by Webshare, Hellspy, and Sosac-style addons.
+- Support common private-addon route shapes such as config-path auth, query/header auth, key-prefixed routes, POST stream routes, and manifest aliases.
 - Keep provider-specific search execution, login, cache, and playback resolution out of the core.
-- Provide shared TMDB/Cinemeta title lookup, search query generation, normalized result ranking, and common stream-card formatting because these are reused across local providers.
+- Provide shared TMDB/Cinemeta title lookup, search query generation, normalized result ranking, and common stream-card formatting because these are reused across provider adapters.
 - Make private addon auth easy to enforce consistently.
 - Support token-hiding playback redirects for providers that should not expose upstream session tokens.
 - Keep models typed for common Stremio fields while allowing provider-specific extensions through flattened JSON maps.
@@ -24,15 +24,15 @@ This document defines the reusable protocol base for Stremio addon servers. It i
 
 ## Compatibility Targets
 
-The core is expected to support these provider patterns:
+The core is expected to support these generic addon patterns:
 
 | Provider style | Required core support | Status |
 | --- | --- | --- |
-| Webshare private Rust addon | Authenticated manifest/config routes, catalog/meta/stream, signed playback redirect | Supported |
-| Hellspy Rust rewrite | Stream-only manifest, `?key=` auth, `POST /stream`, `POST /api/streams`, root/index/API aliases, `quality`, `countryWhitelist` | Supported |
-| Sosac Node addon | `/u/{key}/...` path auth, stream-only route, manifest aliases, direct URL streams | Supported except static assets/config UI, which should be app-level routes |
-
-The path `~/stremio-hellspy/stremio-hellspy-rs` was requested during review but is absent in the local workspace. Compatibility was evaluated against `~/stremio-hellspy/stremio-hellspy-rewrite`.
+| Private stream addon | Authenticated manifest/config routes and stream routes | Supported |
+| Stream-only POST addon | POST stream request routes, query/header auth, and manifest aliases | Supported |
+| Key-prefixed private addon | `/u/{key}/...` manifest and stream routes | Supported |
+| Catalog/meta addon | Catalog and meta routes with config-path support | Supported |
+| Redirecting playback addon | Signed playback route verification and redirect response handling | Supported |
 
 ## Public API
 
@@ -191,7 +191,7 @@ let router = build_router_with_options(
 | `meta_routes` | `true` | Mount meta routes. Disable for stream-only addons. |
 | `playback_routes` | `true` | Mount playback redirect routes. Disable for direct-URL-only providers. |
 | `alias_routes` | `true` | Mount root/index/API manifest aliases. |
-| `path_key_routes` | `true` | Mount Sosac-style `/u/{key}/...` routes. |
+| `path_key_routes` | `true` | Mount key-prefixed `/u/{key}/...` routes. |
 | `health_routes` | `true` | Mount unauthenticated health endpoints. |
 | `playback_signing_key` | `None` | If set, require and verify `?sig=` for playback routes. |
 
@@ -205,7 +205,6 @@ let router = build_router_with_options(
 | `GET /{config}/manifest.json` | encoded JSON path config | config/query/header |
 | `GET /u/{path_key}/manifest.json` | default empty config | path key/query/header |
 | `GET /` | default empty config | query/header |
-| `GET /index.php` | default empty config | query/header |
 | `GET /stremio/manifest.json` | default empty config | query/header |
 | `GET /api/manifest` | default empty config | query/header |
 
@@ -503,18 +502,15 @@ pub struct QueryInput {
 
 Profiles:
 
-- `QueryProfile::Webshare`
-- `QueryProfile::Hellspy`
+- `QueryProfile::Balanced`
+- Provider-tuned query profiles
 
-Webshare:
+Balanced:
 
 - Movie queries are title candidates followed by title plus year variants.
 - Series queries are `SxxExx` and `xxXxx` variants for every title.
 
-Hellspy:
-
-- Movie queries preserve the Hellspy rewrite order: title+year, simplified+year, title, simplified, dotted+year.
-- Series queries preserve the Hellspy rewrite order: `SxxExx`, `xxXxx`, dotted `SxxExx`, episode-only, simplified `SxxExx`.
+Provider-tuned profiles may add provider-specific query ordering or fallback variants.
 
 Provider adapters remain responsible for:
 
@@ -558,9 +554,8 @@ pub struct RankedResult {
 
 Profiles:
 
-- `RankingProfile::Webshare`: prioritizes parsed title match, then filename bucket, votes, and size.
-- `RankingProfile::Hellspy`: prioritizes filename match and query order because Hellspy searches are ordered by increasingly broad fallback queries.
 - `RankingProfile::Balanced`: generic title/filename blend for new adapters.
+- Provider-tuned profiles may prioritize parsed title, filename, query order, votes, size, or quality differently.
 
 Optional signals:
 
@@ -574,7 +569,7 @@ Default filtering rules:
 - Exclude rows without at least a weak title or filename match.
 - Exclude movie results whose parsed year is outside `year_tolerance`.
 - Exclude series results when target season/episode metadata is present and the row season/episode differs.
-- Exclude episode-like movie false positives for Webshare and Balanced profiles.
+- Exclude episode-like movie false positives for profiles that enable that guard.
 
 `MatchScore.strong_match` and `MatchScore.weak_match` are intended to flow into `StreamCardInput.strong_match` and provider-specific display choices.
 
@@ -606,9 +601,8 @@ pub struct StreamCardInput {
 
 Profiles:
 
-- `CardProfile::Webshare`
-- `CardProfile::Hellspy`
 - `CardProfile::Compact`
+- Provider-tuned card profiles
 
 Rules:
 
@@ -638,7 +632,7 @@ Default missing meta serializes as:
 { "meta": {} }
 ```
 
-This preserves parity with the current Node Webshare addon.
+This preserves compatibility with clients that expect an empty object instead of `null`.
 
 ## Signed Playback Contract
 

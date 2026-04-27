@@ -12,17 +12,9 @@ This crate owns the protocol-level work common to provider addons:
 - Health routes.
 - Optional playback redirect routes.
 - Optional HMAC-signed playback tokens.
-- Router options for Webshare-style, Hellspy-style, and Sosac-style route surfaces.
+- Router options for common route surfaces such as stream-only addons, key-prefixed private addons, and manifest aliases.
 
 Provider crates should keep provider-specific login, search API execution, caching, and playback resolution outside this crate. The core includes shared title lookup, search query generation, normalized result ranking, and stream-card formatting helpers that multiple providers can reuse.
-
-## Current Consumers
-
-The crate was shaped against three addon styles in the local Stremio workspaces:
-
-- `apps/webshare-addon`: new Rust Webshare addon.
-- `~/stremio-hellspy/stremio-hellspy-rewrite`: stream-only Rust addon with POST stream and `?key=` auth.
-- `~/stremio-sosac`: stream-only Node addon with `/u/{key}/...` path auth.
 
 ## Install Shape
 
@@ -30,7 +22,7 @@ Add the crate to a provider app:
 
 ```toml
 [dependencies]
-stremio-addon-core = { path = "../stremio-addon-core" }
+stremio-addon-core = "0.1.1"
 async-trait = "0.1"
 axum = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -55,7 +47,7 @@ Release flow:
 
 1. Update `version` in `Cargo.toml`.
 2. Run `cargo test --locked --all-targets`.
-3. Create and push a matching tag, for example `v0.1.0`.
+3. Create and push a matching tag, for example `v0.1.1`.
 4. The release workflow verifies the tag matches `Cargo.toml` and publishes the crate.
 
 ## Minimal Adapter
@@ -175,13 +167,12 @@ Alias routes enabled by default:
 | Route | Purpose |
 | --- | --- |
 | `/` | manifest alias |
-| `/index.php` | manifest alias for PHP-compatible addons |
 | `/stremio/manifest.json` | manifest alias |
 | `/api/manifest` | manifest alias |
 | `/health` | unauthenticated health |
 | `/healthz` | unauthenticated health |
-| `/u/{authKey}/manifest.json` | Sosac-style path-key manifest |
-| `/u/{authKey}/stream/{type}/{id}` | Sosac-style path-key stream |
+| `/u/{authKey}/manifest.json` | key-prefixed private manifest |
+| `/u/{authKey}/stream/{type}/{id}` | key-prefixed private stream |
 
 The route parser strips a trailing `.json` from Stremio `id` path segments.
 
@@ -270,7 +261,7 @@ POST stream routes call:
 async fn stream_request(ctx, request) -> Result<StreamResponse, AddonError>
 ```
 
-The default `stream_request` implementation forwards to `stream` when `type` and `id` are present. Override it for Hellspy-style requests that use `name`, `episode`, `year`, or custom body fields.
+The default `stream_request` implementation forwards to `stream` when `type` and `id` are present. Override it for provider-specific POST request bodies that use alternate fields such as `name`, `episode`, `year`, or custom metadata.
 
 POST body shape:
 
@@ -338,18 +329,13 @@ The core performs metadata HTTP requests, but it does not cache metadata. Provid
 use stremio_addon_core::{build_search_queries, QueryInput, QueryProfile};
 
 let input = QueryInput::from_title_info(&info);
-let webshare_queries = build_search_queries(QueryProfile::Webshare, &input);
-let hellspy_queries = build_search_queries(QueryProfile::Hellspy, &input);
+let queries = build_search_queries(QueryProfile::Balanced, &input);
 ```
 
 Profiles:
 
-- `Webshare`: current Webshare query shape.
-  - Movies: each title, plus each title with year.
-  - Series: `S01E02` and `01x02` variants for each title.
-- `Hellspy`: current Hellspy rewrite query shape.
-  - Movies: year suffix, simplified title, raw title, dotted title.
-  - Series: `S01E02`, `01x02`, dotted season/episode, episode-only fallback.
+- Title/year profile: movie queries include each title and title-with-year variants; series queries include `S01E02` and `01x02` variants.
+- Ordered fallback profile: query order starts specific and gradually broadens, useful for providers where query order is an important ranking signal.
 
 Providers still execute provider searches and normalize raw provider rows into core `SearchResult` values.
 
@@ -375,14 +361,13 @@ let ranked = rank_results(
         query_index: Some(0),
         ..SearchResult::default()
     }],
-    &RankingOptions::for_profile(RankingProfile::Webshare),
+    &RankingOptions::for_profile(RankingProfile::Balanced),
 );
 ```
 
 Profiles:
 
-- `Webshare`: title-first ranking with votes and size as small tie-breakers.
-- `Hellspy`: filename-first ranking with query order as a stronger signal.
+- Provider-tuned profiles for existing query styles.
 - `Balanced`: generic title and filename blend for new adapters.
 
 Ranking behavior:
@@ -390,7 +375,7 @@ Ranking behavior:
 - Filters protected rows by default.
 - Filters results with a year outside the configured tolerance.
 - Requires exact season/episode matches for series when metadata has episode information.
-- Filters episode-like movie false positives for Webshare-style ranking.
+- Filters episode-like movie false positives for profiles that enable that guard.
 - Preserves `strong_match` and `weak_match` flags for card formatting.
 - Uses optional vote ratio and quality rank as small tie-breakers.
 
@@ -410,8 +395,8 @@ The recommended provider pipeline is:
 ```rust
 use stremio_addon_core::{stream_card, CardProfile, StreamCardInput};
 
-let stream = stream_card(CardProfile::Webshare, StreamCardInput {
-    provider: "Webshare".to_string(),
+let stream = stream_card(CardProfile::Compact, StreamCardInput {
+    provider: "Example".to_string(),
     provider_url: Some("https://addon/play/file-id?sig=...".to_string()),
     filename: Some("Movie.2024.1080p.mkv".to_string()),
     quality: Some("1080p".to_string()),
@@ -425,8 +410,7 @@ let stream = stream_card(CardProfile::Webshare, StreamCardInput {
 
 Profiles:
 
-- `Webshare`: filename, language, votes, decimal file size, check mark for strong match.
-- `Hellspy`: `Hellspy\nCZ 720p` style name, CZ/EN audio detection, binary size, country whitelist.
+- Provider-tuned profiles for richer legacy card layouts.
 - `Compact`: generic one-line card useful for simple providers.
 
 The helpers are intentionally presentation-only. They should run after metadata lookup, query generation, provider search, and ranking. They do not resolve playback URLs.
@@ -517,4 +501,4 @@ Keep these in provider or utility crates:
 - Provider-specific ranking overrides that do not fit the built-in profiles.
 - Provider-specific stream-card formatting that does not fit the built-in card profiles.
 
-This keeps the core stable enough to reuse across Webshare, Hellspy, Sosac, and future provider adapters.
+This keeps the core stable enough to reuse across provider adapters.

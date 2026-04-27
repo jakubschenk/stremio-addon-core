@@ -4,6 +4,7 @@ use crate::metadata::TitleInfo;
 pub enum QueryProfile {
     Webshare,
     Hellspy,
+    Balanced,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -31,10 +32,19 @@ pub fn build_search_queries(profile: QueryProfile, input: &QueryInput) -> Vec<St
     match profile {
         QueryProfile::Webshare => webshare_queries(input),
         QueryProfile::Hellspy => hellspy_queries_for_titles(input),
+        QueryProfile::Balanced => balanced_queries(input),
     }
 }
 
+pub fn balanced_queries(input: &QueryInput) -> Vec<String> {
+    title_year_episode_queries(input)
+}
+
 pub fn webshare_queries(input: &QueryInput) -> Vec<String> {
+    title_year_episode_queries(input)
+}
+
+fn title_year_episode_queries(input: &QueryInput) -> Vec<String> {
     let titles = dedupe_non_empty(input.titles.clone());
     if input.content_type.as_deref() == Some("series") {
         let (Some(season), Some(episode)) = (input.season, input.episode) else {
