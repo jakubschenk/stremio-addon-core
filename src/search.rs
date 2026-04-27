@@ -124,7 +124,7 @@ pub fn select_search_titles(
     titles.extend(info.title_candidates());
 
     if let Some(fallback_name) = fallback_name.filter(|name| !name.is_empty()) {
-        let should_add_fallback = !id.is_some_and(|id| id == fallback_name)
+        let should_add_fallback = id.is_none_or(|id| id != fallback_name)
             && !fallback_name.contains(":")
             && !titles.iter().any(|title| title == fallback_name);
         if should_add_fallback {
