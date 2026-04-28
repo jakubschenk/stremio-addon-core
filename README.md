@@ -22,7 +22,7 @@ Add the crate to a provider app:
 
 ```toml
 [dependencies]
-stremio-addon-core = "0.1.1"
+stremio-addon-core = "0.1.3"
 async-trait = "0.1"
 axum = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -47,7 +47,7 @@ Release flow:
 
 1. Update `version` in `Cargo.toml`.
 2. Run `cargo test --locked --all-targets`.
-3. Create and push a matching tag, for example `v0.1.1`.
+3. Create and push a matching tag, for example `v0.1.3`.
 4. The release workflow verifies the tag matches `Cargo.toml` and publishes the crate.
 
 ## Minimal Adapter
