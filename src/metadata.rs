@@ -1,4 +1,5 @@
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 use thiserror::Error;
@@ -22,10 +23,11 @@ impl Default for MetadataConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct TitleInfo {
     pub content_type: Option<String>,
     pub primary_title: Option<String>,
+    pub title_cs: Option<String>,
     pub title_sk: Option<String>,
     pub title_en: Option<String>,
     pub original_title: Option<String>,
@@ -38,6 +40,7 @@ impl TitleInfo {
     pub fn title_candidates(&self) -> Vec<String> {
         dedupe_non_empty([
             self.primary_title.clone(),
+            self.title_cs.clone(),
             self.title_sk.clone(),
             self.title_en.clone(),
             self.original_title.clone(),
@@ -348,6 +351,7 @@ fn title_info_from_tmdb_values(
     TitleInfo {
         content_type: Some(content_type.to_string()),
         primary_title: string_value_at(primary, &[title_key]),
+        title_cs: string_value_at(primary, &[title_key]),
         title_sk: sk.and_then(|value| string_value_at(value, &[title_key])),
         title_en: en.and_then(|value| string_value_at(value, &[title_key])),
         original_title: string_value_at(primary, &[original_key])
@@ -429,6 +433,7 @@ mod tests {
             TitleInfo {
                 content_type: Some("movie".to_string()),
                 primary_title: Some("Naprosti cizinci".to_string()),
+                title_cs: Some("Naprosti cizinci".to_string()),
                 title_sk: Some("Uplni cudzinci".to_string()),
                 title_en: Some("Perfect Strangers".to_string()),
                 original_title: Some("Perfetti sconosciuti".to_string()),
@@ -443,11 +448,15 @@ mod tests {
     fn title_candidates_are_deduped() {
         let info = TitleInfo {
             primary_title: Some("Alien".to_string()),
+            title_cs: Some("Vetřelec".to_string()),
             original_title: Some("Alien".to_string()),
             title_en: Some("Alien Covenant".to_string()),
             ..TitleInfo::default()
         };
 
-        assert_eq!(info.title_candidates(), vec!["Alien", "Alien Covenant"]);
+        assert_eq!(
+            info.title_candidates(),
+            vec!["Alien", "Vetřelec", "Alien Covenant"]
+        );
     }
 }

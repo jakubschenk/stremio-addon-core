@@ -74,6 +74,8 @@ pub enum AddonError {
     Auth(#[from] AuthError),
     #[error("invalid config: {0}")]
     Config(#[from] ConfigError),
+    #[error("not found")]
+    NotFound,
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("provider error: {0}")]
@@ -86,6 +88,7 @@ impl IntoResponse for AddonError {
     fn into_response(self) -> Response {
         let status = match self {
             AddonError::Auth(_) => StatusCode::UNAUTHORIZED,
+            AddonError::NotFound => StatusCode::NOT_FOUND,
             AddonError::Config(_) | AddonError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AddonError::Provider(_) | AddonError::Playback(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -129,6 +132,7 @@ pub struct RouterOptions {
     pub path_key_routes: bool,
     pub health_routes: bool,
     pub playback_signing_key: Option<String>,
+    pub require_stream_json_suffix: bool,
 }
 
 impl Default for RouterOptions {
@@ -141,6 +145,7 @@ impl Default for RouterOptions {
             path_key_routes: true,
             health_routes: true,
             playback_signing_key: None,
+            require_stream_json_suffix: false,
         }
     }
 }
@@ -156,7 +161,7 @@ pub fn build_router_with_options(
         .route("/stream", post(stream_post))
         .route("/stream/:type/:id", get(stream_without_config))
         .route("/api/streams", post(stream_post))
-        .route("/api/streams/:type/:id", get(stream_without_config))
+        .route("/api/streams/:type/:id", get(stream_api_without_config))
         .route("/:config/stream/:type/:id", get(stream_with_config));
 
     if options.alias_routes {
@@ -261,6 +266,17 @@ async fn stream_without_config(
     headers: HeaderMap,
 ) -> Result<Json<StreamResponse>, AddonError> {
     let ctx = context_from_parts(&state.auth, None, Some(&query), &headers, None)?;
+    let id = stream_path_id(&state.options, &id)?;
+    state.adapter.stream(ctx, content_type, id).await.map(Json)
+}
+
+async fn stream_api_without_config(
+    State(state): State<AppState>,
+    Path((content_type, id)): Path<(String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<StreamResponse>, AddonError> {
+    let ctx = context_from_parts(&state.auth, None, Some(&query), &headers, None)?;
     state
         .adapter
         .stream(ctx, content_type, strip_json_suffix(&id).to_string())
@@ -281,11 +297,8 @@ async fn stream_with_path_key(
         &headers,
         Some(path_key.as_str()),
     )?;
-    state
-        .adapter
-        .stream(ctx, content_type, strip_json_suffix(&id).to_string())
-        .await
-        .map(Json)
+    let id = stream_path_id(&state.options, &id)?;
+    state.adapter.stream(ctx, content_type, id).await.map(Json)
 }
 
 async fn stream_with_config(
@@ -296,11 +309,8 @@ async fn stream_with_config(
 ) -> Result<Json<StreamResponse>, AddonError> {
     let cfg = decode_config_segment(&config)?;
     let ctx = context_from_parts(&state.auth, Some(cfg), Some(&query), &headers, None)?;
-    state
-        .adapter
-        .stream(ctx, content_type, strip_json_suffix(&id).to_string())
-        .await
-        .map(Json)
+    let id = stream_path_id(&state.options, &id)?;
+    state.adapter.stream(ctx, content_type, id).await.map(Json)
 }
 
 async fn catalog_without_config(
@@ -450,6 +460,14 @@ fn percent_decode(value: &str) -> Result<String, AddonError> {
         .decode_utf8()
         .map(|value| value.into_owned())
         .map_err(|_| AddonError::BadRequest("invalid percent encoding".to_string()))
+}
+
+fn stream_path_id(options: &RouterOptions, id: &str) -> Result<String, AddonError> {
+    if options.require_stream_json_suffix && !id.ends_with(".json") {
+        return Err(AddonError::NotFound);
+    }
+
+    Ok(strip_json_suffix(id).to_string())
 }
 
 fn playback_response(playback: PlaybackResponse) -> Result<Response, AddonError> {
@@ -653,6 +671,41 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_can_require_json_suffix_without_requiring_it_for_api_alias() {
+        let app = build_router_with_options(
+            Arc::new(DummyAdapter),
+            AuthConfig::disabled(),
+            RouterOptions {
+                require_stream_json_suffix: true,
+                ..RouterOptions::default()
+            },
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/stream/movie/tt123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/streams/movie/tt123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 

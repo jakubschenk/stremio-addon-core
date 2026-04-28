@@ -132,6 +132,11 @@ pub fn select_search_titles(
 ) -> Vec<String> {
     let mut titles = Vec::new();
     titles.extend(info.title_candidates());
+    let folded = titles
+        .iter()
+        .filter_map(|title| ascii_fold_latin(title))
+        .collect::<Vec<_>>();
+    titles.extend(folded);
 
     if let Some(fallback_name) = fallback_name.filter(|name| !name.is_empty()) {
         let should_add_fallback = id.is_none_or(|id| id != fallback_name)
@@ -147,6 +152,56 @@ pub fn select_search_titles(
     } else {
         dedupe_non_empty(titles)
     }
+}
+
+fn ascii_fold_latin(value: &str) -> Option<String> {
+    let mut folded = String::new();
+    let mut changed = false;
+    for char in value.chars() {
+        let replacement = match char {
+            'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+            'Á' | 'À' | 'Â' | 'Ä' | 'Ã' | 'Å' | 'Ā' | 'Ă' | 'Ą' => "A",
+            'č' | 'ć' | 'ç' => "c",
+            'Č' | 'Ć' | 'Ç' => "C",
+            'ď' => "d",
+            'Ď' => "D",
+            'é' | 'è' | 'ê' | 'ë' | 'ě' | 'ē' | 'ė' | 'ę' => "e",
+            'É' | 'È' | 'Ê' | 'Ë' | 'Ě' | 'Ē' | 'Ė' | 'Ę' => "E",
+            'í' | 'ì' | 'î' | 'ï' | 'ī' | 'į' => "i",
+            'Í' | 'Ì' | 'Î' | 'Ï' | 'Ī' | 'Į' => "I",
+            'ľ' | 'ĺ' | 'ł' => "l",
+            'Ľ' | 'Ĺ' | 'Ł' => "L",
+            'ň' | 'ń' | 'ñ' => "n",
+            'Ň' | 'Ń' | 'Ñ' => "N",
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ő' | 'ø' | 'ō' => "o",
+            'Ó' | 'Ò' | 'Ô' | 'Ö' | 'Õ' | 'Ő' | 'Ø' | 'Ō' => "O",
+            'ř' => "r",
+            'Ř' => "R",
+            'š' | 'ś' => "s",
+            'Š' | 'Ś' => "S",
+            'ť' => "t",
+            'Ť' => "T",
+            'ú' | 'ù' | 'û' | 'ü' | 'ů' | 'ű' | 'ū' => "u",
+            'Ú' | 'Ù' | 'Û' | 'Ü' | 'Ů' | 'Ű' | 'Ū' => "U",
+            'ý' | 'ÿ' => "y",
+            'Ý' | 'Ÿ' => "Y",
+            'ž' | 'ź' | 'ż' => "z",
+            'Ž' | 'Ź' | 'Ż' => "Z",
+            'æ' => "ae",
+            'Æ' => "AE",
+            'œ' => "oe",
+            'Œ' => "OE",
+            'ß' => "ss",
+            _ => {
+                folded.push(char);
+                continue;
+            }
+        };
+        changed = true;
+        folded.push_str(replacement);
+    }
+
+    changed.then_some(folded)
 }
 
 pub fn dotted_title(name: &str) -> String {
@@ -234,6 +289,34 @@ mod tests {
                 "English Title.S01E02",
                 "English Title - 02"
             ]
+        );
+    }
+
+    #[test]
+    fn select_search_titles_keeps_czech_and_english_candidates() {
+        let info = TitleInfo {
+            title_cs: Some("Hvezdna brana".to_string()),
+            title_en: Some("Stargate SG-1".to_string()),
+            ..TitleInfo::default()
+        };
+
+        assert_eq!(
+            select_search_titles(&info, Some("tt0118480:4:10"), Some("tt0118480")),
+            vec!["Hvezdna brana", "Stargate SG-1"]
+        );
+    }
+
+    #[test]
+    fn select_search_titles_adds_ascii_folded_localized_candidates() {
+        let info = TitleInfo {
+            title_cs: Some("Hvězdná brána".to_string()),
+            title_en: Some("Stargate SG-1".to_string()),
+            ..TitleInfo::default()
+        };
+
+        assert_eq!(
+            select_search_titles(&info, None, None),
+            vec!["Hvězdná brána", "Stargate SG-1", "Hvezdna brana"]
         );
     }
 }
