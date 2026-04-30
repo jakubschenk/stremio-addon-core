@@ -12,10 +12,10 @@ Scope reviewed:
 
 Original verified state:
 
-- `cargo fmt --check` passed in `/home/abuk/stremio-addon-core`.
-- `cargo test` passed in `/home/abuk/stremio-addon-core`: 40 tests.
-- `cargo test --workspace` passed in `/home/abuk/stremio-webshare/stremio-webshare-rs`.
-- `/home/abuk/stremio-addon-core` is not a git repo, so no `git diff` or `git status` was available there.
+- `cargo fmt --check` passed in `/home/abuk/stremio/plugins/rust/stremio-addon-core`.
+- `cargo test` passed in `/home/abuk/stremio/plugins/rust/stremio-addon-core`: 40 tests.
+- `cargo test --workspace` passed in `/home/abuk/stremio/plugins/rust/stremio-webshare-rs`.
+- `/home/abuk/stremio/plugins/rust/stremio-addon-core` is not a git repo, so no `git diff` or `git status` was available there.
 
 ## Summary
 
