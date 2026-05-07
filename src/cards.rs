@@ -42,30 +42,26 @@ pub fn webshare_card(input: StreamCardInput) -> Stream {
         description.push_str(&format!("\n🌐 {language}"));
     }
     if input.positive_votes.is_some() || input.negative_votes.is_some() {
-        description.push_str(&format!(
-            "\n👍 {} 👎 {}",
-            input.positive_votes.unwrap_or_default(),
-            input.negative_votes.unwrap_or_default()
-        ));
+        let positive = input.positive_votes.unwrap_or_default();
+        let negative = input.negative_votes.unwrap_or_default();
+        description.push_str(&format!("\n👍 {positive} 👎 {negative}"));
     }
     if let Some(size) = input.size_bytes {
-        description.push_str(&format!("\n💾 {}", format_decimal_size(size)));
+        let formatted_size = format_decimal_size(size);
+        description.push_str(&format!("\n💾 {formatted_size}"));
     }
+    let strong_marker = if input.strong_match { " ✅" } else { "" };
 
     Stream {
         ident: input.ident,
-        name: Some(format!(
-            "{}{} {}",
-            input.provider,
-            if input.strong_match { " ✅" } else { "" },
-            quality
-        )),
+        name: Some(format!("{}{strong_marker} {quality}", input.provider)),
         quality: empty_to_none(quality),
         url: input.provider_url,
         description: Some(description),
         behavior_hints: Some(StreamBehaviorHints {
             binge_group: Some(input.binge_group.unwrap_or_else(|| {
-                format!("{}|{}", input.provider, input.language.unwrap_or_default())
+                let language = input.language.unwrap_or_default();
+                format!("{}|{language}", input.provider)
             })),
             video_size: input.size_bytes,
             filename: input.filename,
@@ -99,7 +95,7 @@ pub fn hellspy_card(input: StreamCardInput) -> Stream {
 
     Stream {
         ident: input.ident,
-        name: Some(format!("{}\n{} {}", input.provider, badge, quality)),
+        name: Some(format!("{}\n{badge} {quality}", input.provider)),
         title: Some(description.clone()),
         quality: Some(quality.clone()),
         url: input.provider_url,
@@ -109,11 +105,9 @@ pub fn hellspy_card(input: StreamCardInput) -> Stream {
                 .country_whitelist
                 .or_else(|| Some(vec!["cze".to_string()])),
             binge_group: Some(input.binge_group.unwrap_or_else(|| {
-                format!(
-                    "{}-{}",
-                    input.provider.to_lowercase(),
-                    normalize_quality(&quality)
-                )
+                let provider = input.provider.to_lowercase();
+                let quality = normalize_quality(&quality);
+                format!("{provider}-{quality}")
             })),
             filename: input.filename,
             video_size: input.size_bytes,
@@ -129,7 +123,8 @@ pub fn compact_card(input: StreamCardInput) -> Stream {
         details.push(format!("📺 {quality}"));
     }
     if let Some(size) = input.size_bytes {
-        details.push(format!("💾 {}", format_decimal_size(size)));
+        let formatted_size = format_decimal_size(size);
+        details.push(format!("💾 {formatted_size}"));
     }
     if let Some(language) = input.language.as_deref() {
         details.push(format!("🌐 {language}"));

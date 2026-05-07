@@ -113,12 +113,13 @@ pub fn hellspy_queries(
             .filter(|year| !year.is_empty())
             .map(|year| format!(".{year}"))
             .unwrap_or_default();
+        let dotted = dotted_title(name);
         queries.extend([
             format!("{name}{suffix}"),
             format!("{simplified_name}{suffix}"),
             name.to_string(),
             simplified_name.to_string(),
-            format!("{}{}", dotted_title(name), dotted_suffix),
+            format!("{dotted}{dotted_suffix}"),
         ]);
     }
 

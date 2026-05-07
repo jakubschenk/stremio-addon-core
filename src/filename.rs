@@ -70,7 +70,7 @@ static QUALITY_SIZE_RE: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| 
     .into_iter()
     .map(|(size, label)| {
         (
-            Regex::new(&format!(r"\b{}p?\b", size)).expect("valid regex"),
+            Regex::new(&format!(r"\b{size}p?\b")).expect("valid regex"),
             label,
         )
     })
