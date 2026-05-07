@@ -317,16 +317,22 @@ pub struct ParsedStremioId {
 
 impl ParsedStremioId {
     pub fn parse(id: &str) -> Self {
-        let mut parts = id.split(':');
-        let base_id = parts.next().unwrap_or_default().to_string();
-        let season = parts.next().and_then(|value| value.parse().ok());
-        let episode = parts.next().and_then(|value| value.parse().ok());
+        let (base_id, season, episode) =
+            parse_episode_id_suffix(id).unwrap_or_else(|| (id.to_string(), None, None));
         Self {
             base_id,
             season,
             episode,
         }
     }
+}
+
+fn parse_episode_id_suffix(id: &str) -> Option<(String, Option<u32>, Option<u32>)> {
+    let (without_episode, episode) = id.rsplit_once(':')?;
+    let episode = episode.parse().ok()?;
+    let (base_id, season) = without_episode.rsplit_once(':')?;
+    let season = season.parse().ok()?;
+    Some((base_id.to_string(), Some(season), Some(episode)))
 }
 
 fn title_info_from_tmdb_values(
@@ -414,6 +420,26 @@ mod tests {
                 base_id: "tt1234567".to_string(),
                 season: Some(2),
                 episode: Some(8),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_namespaced_stremio_episode_ids() {
+        assert_eq!(
+            ParsedStremioId::parse("tmdb:12345:2:8"),
+            ParsedStremioId {
+                base_id: "tmdb:12345".to_string(),
+                season: Some(2),
+                episode: Some(8),
+            }
+        );
+        assert_eq!(
+            ParsedStremioId::parse("tmdb:12345"),
+            ParsedStremioId {
+                base_id: "tmdb:12345".to_string(),
+                season: None,
+                episode: None,
             }
         );
     }

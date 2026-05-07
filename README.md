@@ -14,7 +14,7 @@ This crate owns the protocol-level work common to provider addons:
 - Optional HMAC-signed playback tokens.
 - Router options for common route surfaces such as stream-only addons, key-prefixed private addons, and manifest aliases.
 
-Provider crates should keep provider-specific login, search API execution, caching, and playback resolution outside this crate. The core includes shared title lookup, search query generation, normalized result ranking, and stream-card formatting helpers that multiple providers can reuse.
+Provider crates should keep provider-specific login, search API execution, and playback resolution outside this crate. The core includes shared title lookup, search query generation, normalized result ranking, filename/media parsing, JSON cache storage, stream selection, and stream-card formatting helpers that multiple providers can reuse.
 
 ## Install Shape
 
@@ -22,7 +22,7 @@ Add the crate to a provider app:
 
 ```toml
 [dependencies]
-stremio-addon-core = "0.1.3"
+stremio-addon-core = "0.1.4"
 async-trait = "0.1"
 axum = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -47,7 +47,7 @@ Release flow:
 
 1. Update `version` in `Cargo.toml`.
 2. Run `cargo test --locked --all-targets`.
-3. Create and push a matching tag, for example `v0.1.3`.
+3. Create and push a matching tag, for example `v0.1.4`.
 4. The release workflow verifies the tag matches `Cargo.toml` and publishes the crate.
 
 ## Minimal Adapter
@@ -492,12 +492,12 @@ Ok(MetaResponse::default())
 
 ## Provider Design Guidance
 
-Keep these in provider or utility crates:
+Keep these in provider crates:
 
 - Provider HTTP clients.
 - Login/session/token caching.
-- Filename parsing.
-- Cache storage.
+- Provider-specific filename parsing that does not fit the shared parser.
+- Provider-specific cache policy. The shared `FileJsonCache` only provides storage semantics.
 - Provider-specific ranking overrides that do not fit the built-in profiles.
 - Provider-specific stream-card formatting that does not fit the built-in card profiles.
 
