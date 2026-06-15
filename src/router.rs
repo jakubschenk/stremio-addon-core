@@ -2,6 +2,7 @@ use crate::auth::{AuthConfig, AuthError, AuthQuery};
 use crate::config::{decode_config_segment, strip_json_suffix, ConfigError, UserConfig};
 use crate::models::{
     CatalogExtraArgs, CatalogResponse, Manifest, MetaResponse, StreamRequest, StreamResponse,
+    SubtitlesExtraArgs, SubtitlesResponse,
 };
 use crate::signing::{SignedPlayback, SigningError};
 use async_trait::async_trait;
@@ -44,6 +45,16 @@ pub trait AddonAdapter: Send + Sync + 'static {
             return Ok(StreamResponse::default());
         };
         self.stream(ctx, content_type, id).await
+    }
+
+    async fn subtitles(
+        &self,
+        _ctx: AddonContext,
+        _content_type: String,
+        _id: String,
+        _extra: SubtitlesExtraArgs,
+    ) -> Result<SubtitlesResponse, AddonError> {
+        Ok(SubtitlesResponse::default())
     }
 
     async fn catalog(
@@ -119,6 +130,14 @@ struct AppState {
     options: RouterOptions,
 }
 
+struct SubtitlesRouteParts {
+    user_config: Option<UserConfig>,
+    content_type: String,
+    id: String,
+    extra: String,
+    path_key: Option<String>,
+}
+
 pub fn build_router(adapter: Arc<dyn AddonAdapter>, auth: AuthConfig) -> Router {
     build_router_with_options(adapter, auth, RouterOptions::default())
 }
@@ -127,6 +146,7 @@ pub fn build_router(adapter: Arc<dyn AddonAdapter>, auth: AuthConfig) -> Router 
 pub struct RouterOptions {
     pub catalog_routes: bool,
     pub meta_routes: bool,
+    pub subtitles_routes: bool,
     pub playback_routes: bool,
     pub alias_routes: bool,
     pub path_key_routes: bool,
@@ -140,6 +160,7 @@ impl Default for RouterOptions {
         Self {
             catalog_routes: true,
             meta_routes: true,
+            subtitles_routes: true,
             playback_routes: true,
             alias_routes: true,
             path_key_routes: true,
@@ -190,6 +211,32 @@ pub fn build_router_with_options(
         router = router
             .route("/meta/:type/:id", get(meta_without_config))
             .route("/:config/meta/:type/:id", get(meta_with_config));
+    }
+
+    if options.subtitles_routes {
+        router = router
+            .route("/subtitles/:type/:id", get(subtitles_without_config_empty))
+            .route("/subtitles/:type/:id/*extra", get(subtitles_without_config))
+            .route(
+                "/:config/subtitles/:type/:id",
+                get(subtitles_with_config_empty),
+            )
+            .route(
+                "/:config/subtitles/:type/:id/*extra",
+                get(subtitles_with_config),
+            );
+
+        if options.path_key_routes {
+            router = router
+                .route(
+                    "/u/:path_key/subtitles/:type/:id",
+                    get(subtitles_with_path_key_empty),
+                )
+                .route(
+                    "/u/:path_key/subtitles/:type/:id/*extra",
+                    get(subtitles_with_path_key),
+                );
+        }
     }
 
     if options.playback_routes {
@@ -342,6 +389,159 @@ async fn catalog_with_config(
         .map(Json)
 }
 
+async fn subtitles_without_config_empty(
+    State(state): State<AppState>,
+    Path((content_type, id)): Path<(String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: None,
+            content_type,
+            id,
+            extra: String::new(),
+            path_key: None,
+        },
+    )
+    .await
+}
+
+async fn subtitles_without_config(
+    State(state): State<AppState>,
+    Path((content_type, id, extra)): Path<(String, String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: None,
+            content_type,
+            id,
+            extra,
+            path_key: None,
+        },
+    )
+    .await
+}
+
+async fn subtitles_with_config_empty(
+    State(state): State<AppState>,
+    Path((config, content_type, id)): Path<(String, String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    let cfg = decode_config_segment(&config)?;
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: Some(cfg),
+            content_type,
+            id,
+            extra: String::new(),
+            path_key: None,
+        },
+    )
+    .await
+}
+
+async fn subtitles_with_config(
+    State(state): State<AppState>,
+    Path((config, content_type, id, extra)): Path<(String, String, String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    let cfg = decode_config_segment(&config)?;
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: Some(cfg),
+            content_type,
+            id,
+            extra,
+            path_key: None,
+        },
+    )
+    .await
+}
+
+async fn subtitles_with_path_key_empty(
+    State(state): State<AppState>,
+    Path((path_key, content_type, id)): Path<(String, String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: None,
+            content_type,
+            id,
+            extra: String::new(),
+            path_key: Some(path_key),
+        },
+    )
+    .await
+}
+
+async fn subtitles_with_path_key(
+    State(state): State<AppState>,
+    Path((path_key, content_type, id, extra)): Path<(String, String, String, String)>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    subtitles_response(
+        state,
+        query,
+        headers,
+        SubtitlesRouteParts {
+            user_config: None,
+            content_type,
+            id,
+            extra,
+            path_key: Some(path_key),
+        },
+    )
+    .await
+}
+
+async fn subtitles_response(
+    state: AppState,
+    query: AuthQuery,
+    headers: HeaderMap,
+    parts: SubtitlesRouteParts,
+) -> Result<Json<SubtitlesResponse>, AddonError> {
+    let ctx = context_from_parts(
+        &state.auth,
+        parts.user_config,
+        Some(&query),
+        &headers,
+        parts.path_key.as_deref(),
+    )?;
+    state
+        .adapter
+        .subtitles(
+            ctx,
+            parts.content_type,
+            strip_json_suffix(&parts.id).to_string(),
+            parse_subtitles_extra_args(&parts.extra)?,
+        )
+        .await
+        .map(Json)
+}
+
 async fn meta_without_config(
     State(state): State<AppState>,
     Path((content_type, id)): Path<(String, String)>,
@@ -439,20 +639,46 @@ fn signing_error(error: SigningError) -> AddonError {
 }
 
 fn parse_extra_args(extra: &str) -> Result<CatalogExtraArgs, AddonError> {
+    Ok(CatalogExtraArgs {
+        values: parse_extra_values(extra, "catalog")?,
+    })
+}
+
+fn parse_subtitles_extra_args(extra: &str) -> Result<SubtitlesExtraArgs, AddonError> {
+    Ok(SubtitlesExtraArgs {
+        values: parse_extra_values(extra, "subtitles")?,
+    })
+}
+
+fn parse_extra_values(
+    extra: &str,
+    resource: &'static str,
+) -> Result<BTreeMap<String, String>, AddonError> {
     let mut values = BTreeMap::new();
-    let extra = strip_json_suffix(extra);
-
-    for segment in extra.split('/') {
-        let Some((key, value)) = segment.split_once('=') else {
-            return Err(AddonError::BadRequest(format!(
-                "invalid catalog extra segment: {segment}"
-            )));
-        };
-
-        values.insert(percent_decode(key)?, percent_decode(value)?);
+    let extra = strip_json_suffix(extra).trim_start_matches('/');
+    if extra.is_empty() {
+        return Ok(values);
     }
 
-    Ok(CatalogExtraArgs { values })
+    for segment in extra.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        for pair in segment.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = pair.split_once('=') else {
+                return Err(AddonError::BadRequest(format!(
+                    "invalid {resource} extra segment: {pair}"
+                )));
+            };
+
+            values.insert(percent_decode(key)?, percent_decode(value)?);
+        }
+    }
+
+    Ok(values)
 }
 
 fn percent_decode(value: &str) -> Result<String, AddonError> {
@@ -490,7 +716,7 @@ fn playback_response(playback: PlaybackResponse) -> Result<Response, AddonError>
 mod tests {
     use super::*;
     use crate::models::{
-        BehaviorHints, CatalogDef, Meta, MetaPreview, Resource, ResourceSpec, Stream,
+        BehaviorHints, CatalogDef, Meta, MetaPreview, Resource, ResourceSpec, Stream, Subtitle,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -563,6 +789,28 @@ mod tests {
                     poster: None,
                 }],
                 cache_max_age: Some(3600),
+            })
+        }
+
+        async fn subtitles(
+            &self,
+            _ctx: AddonContext,
+            content_type: String,
+            id: String,
+            extra: SubtitlesExtraArgs,
+        ) -> Result<SubtitlesResponse, AddonError> {
+            Ok(SubtitlesResponse {
+                subtitles: vec![Subtitle {
+                    id: format!(
+                        "{content_type}:{id}:{}:{}",
+                        extra.get("videoHash").unwrap_or_default(),
+                        extra.get("filename").unwrap_or_default()
+                    ),
+                    url: "https://example.com/sub.vtt".to_string(),
+                    lang: "cze".to_string(),
+                    label: Some(extra.get("videoSize").unwrap_or_default().to_string()),
+                    extra: Default::default(),
+                }],
             })
         }
 
@@ -733,6 +981,59 @@ mod tests {
     async fn parses_catalog_extra_args() {
         let extra = parse_extra_args("search=hello%20world.json").unwrap();
         assert_eq!(extra.get("search"), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn subtitles_accept_stremio_extra_args_path() {
+        let app = build_router(Arc::new(DummyAdapter), AuthConfig::required("secret"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/subtitles/series/tt32550889%3A1%3A7/filename=Witch%20Hat%20Atelier%20s01e07_CZ-%20Who%20Is%20Magic%20For-..1080p.Czech.mkv&videoSize=403386418&videoHash=0ea7b10764f492d6.json?authKey=secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["subtitles"][0]["id"],
+            "series:tt32550889:1:7:0ea7b10764f492d6:Witch Hat Atelier s01e07_CZ- Who Is Magic For-..1080p.Czech.mkv"
+        );
+        assert_eq!(json["subtitles"][0]["lang"], "cze");
+        assert_eq!(json["subtitles"][0]["label"], "403386418");
+    }
+
+    #[tokio::test]
+    async fn subtitles_require_auth() {
+        let app = build_router(Arc::new(DummyAdapter), AuthConfig::required("secret"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/subtitles/movie/tt123.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn parses_ampersand_extra_args() {
+        let extra = parse_subtitles_extra_args(
+            "filename=Movie%20Name.mkv&videoSize=123&videoHash=abc.json",
+        )
+        .unwrap();
+        assert_eq!(extra.get("filename"), Some("Movie Name.mkv"));
+        assert_eq!(extra.get("videoSize"), Some("123"));
+        assert_eq!(extra.get("videoHash"), Some("abc"));
     }
 
     #[tokio::test]

@@ -154,6 +154,24 @@ pub struct StreamBehaviorHints {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubtitlesResponse {
+    pub subtitles: Vec<Subtitle>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subtitle {
+    pub id: String,
+    pub url: String,
+    pub lang: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogResponse {
     pub metas: Vec<MetaPreview>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +219,11 @@ pub struct CatalogExtraArgs {
     pub values: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SubtitlesExtraArgs {
+    pub values: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamRequest {
@@ -219,6 +242,12 @@ pub struct StreamRequest {
 }
 
 impl CatalogExtraArgs {
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+}
+
+impl SubtitlesExtraArgs {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
@@ -257,6 +286,31 @@ mod tests {
         assert_eq!(
             serde_json::to_value(stream).unwrap(),
             json!({ "name": "Provider", "externalUrl": "https://example.com" })
+        );
+    }
+
+    #[test]
+    fn subtitles_response_matches_stremio_shape() {
+        let response = SubtitlesResponse {
+            subtitles: vec![Subtitle {
+                id: "sub-1".to_string(),
+                url: "https://example.com/sub.vtt".to_string(),
+                lang: "cze".to_string(),
+                label: Some("Czech".to_string()),
+                extra: Map::new(),
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "subtitles": [{
+                    "id": "sub-1",
+                    "url": "https://example.com/sub.vtt",
+                    "lang": "cze",
+                    "label": "Czech"
+                }]
+            })
         );
     }
 
