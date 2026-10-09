@@ -1,3 +1,4 @@
+use futures_util::future::join;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,6 +22,22 @@ impl Default for MetadataConfig {
             timeout_seconds: 10,
         }
     }
+}
+
+pub const WIKIDATA_API_URL: &str = "https://www.wikidata.org/w/api.php";
+const WIKIDATA_TIMEOUT: Duration = Duration::from_secs(3);
+const WIKIDATA_USER_AGENT: &str = concat!(
+    "stremio-addon-core/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/jakubschenk/stremio-addon-core)"
+);
+
+/// Localized labels of a Wikidata item, looked up by IMDb ID.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WikidataTitles {
+    pub cs: Option<String>,
+    pub sk: Option<String>,
+    pub en: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -56,6 +73,7 @@ impl TitleInfo {
 pub struct MetadataClient {
     http: Client,
     config: MetadataConfig,
+    wikidata_url: Option<String>,
 }
 
 impl MetadataClient {
@@ -64,11 +82,22 @@ impl MetadataClient {
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { http, config }
+        Self::with_client(http, config)
     }
 
     pub fn with_client(http: Client, config: MetadataConfig) -> Self {
-        Self { http, config }
+        Self {
+            http,
+            config,
+            wikidata_url: Some(WIKIDATA_API_URL.to_string()),
+        }
+    }
+
+    /// Overrides the Wikidata API used to fill Czech and Slovak titles when
+    /// TMDB is unavailable. `None` disables the lookup.
+    pub fn with_wikidata_url(mut self, wikidata_url: Option<String>) -> Self {
+        self.wikidata_url = wikidata_url;
+        self
     }
 
     pub async fn lookup_imdb(
@@ -78,13 +107,23 @@ impl MetadataClient {
     ) -> Result<Option<TitleInfo>, MetadataError> {
         let parsed = ParsedStremioId::parse(stremio_id);
         let imdb_id = parsed.base_id.as_str();
-        let mut info = if self.config.tmdb_api_key.is_some() {
-            match self.lookup_tmdb_by_imdb(content_type, imdb_id).await? {
-                Some(info) => Some(info),
-                None => self.lookup_cinemeta(content_type, imdb_id).await?,
-            }
+        let tmdb_info = if self.config.tmdb_api_key.is_some() {
+            self.lookup_tmdb_by_imdb(content_type, imdb_id).await?
         } else {
-            self.lookup_cinemeta(content_type, imdb_id).await?
+            None
+        };
+        let mut info = match tmdb_info {
+            Some(info) => Some(info),
+            None => {
+                // Cinemeta only knows the English title, so localized titles
+                // (e.g. "Na plech" for "Do the Mæth") come from Wikidata.
+                let (cinemeta, wikidata) = join(
+                    self.lookup_cinemeta(content_type, imdb_id),
+                    self.lookup_wikidata_titles(imdb_id),
+                )
+                .await;
+                cinemeta?.map(|info| merge_wikidata_titles(info, wikidata))
+            }
         };
 
         if let Some(info) = info.as_mut() {
@@ -117,6 +156,85 @@ impl MetadataClient {
         }
 
         Ok(info)
+    }
+
+    /// Looks up Czech, Slovak and English labels for an IMDb ID. Failures are
+    /// treated as missing data so they never block the primary lookup.
+    pub async fn lookup_wikidata_titles(&self, imdb_id: &str) -> Option<WikidataTitles> {
+        let wikidata_url = self.wikidata_url.as_deref()?;
+        if !imdb_id.starts_with("tt") {
+            return None;
+        }
+        match self.fetch_wikidata_titles(wikidata_url, imdb_id).await {
+            Ok(titles) => titles,
+            Err(error) => {
+                tracing::debug!(imdb_id, %error, "wikidata title lookup failed");
+                None
+            }
+        }
+    }
+
+    async fn fetch_wikidata_titles(
+        &self,
+        wikidata_url: &str,
+        imdb_id: &str,
+    ) -> Result<Option<WikidataTitles>, MetadataError> {
+        let search = format!("haswbstatement:P345={imdb_id}");
+        let found = self
+            .http
+            .get(wikidata_url)
+            .timeout(WIKIDATA_TIMEOUT)
+            .header(reqwest::header::USER_AGENT, WIKIDATA_USER_AGENT)
+            .query(&[
+                ("action", "query"),
+                ("list", "search"),
+                ("srsearch", search.as_str()),
+                ("srlimit", "1"),
+                ("format", "json"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let Some(entity_id) = found
+            .pointer("/query/search/0/title")
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with('Q'))
+        else {
+            return Ok(None);
+        };
+
+        let entities = self
+            .http
+            .get(wikidata_url)
+            .timeout(WIKIDATA_TIMEOUT)
+            .header(reqwest::header::USER_AGENT, WIKIDATA_USER_AGENT)
+            .query(&[
+                ("action", "wbgetentities"),
+                ("ids", entity_id),
+                ("props", "labels"),
+                ("languages", "cs|sk|en"),
+                ("format", "json"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let Some(labels) = entities
+            .get("entities")
+            .and_then(|entities| entities.get(entity_id))
+            .and_then(|entity| entity.get("labels"))
+        else {
+            return Ok(None);
+        };
+        let label = |lang: &str| string_value_at(labels, &[lang, "value"]);
+        Ok(Some(WikidataTitles {
+            cs: label("cs"),
+            sk: label("sk"),
+            en: label("en"),
+        }))
     }
 
     async fn lookup_cinemeta(
@@ -369,6 +487,28 @@ fn title_info_from_tmdb_values(
     }
 }
 
+/// Fills missing localized titles from Wikidata. A Czech title becomes the
+/// primary title, matching the TMDB path, and the previous primary title is
+/// kept as the English one.
+pub fn merge_wikidata_titles(mut info: TitleInfo, titles: Option<WikidataTitles>) -> TitleInfo {
+    let Some(titles) = titles else {
+        return info;
+    };
+    if info.title_en.is_none() {
+        info.title_en = info.primary_title.clone().or(titles.en);
+    }
+    if info.title_sk.is_none() {
+        info.title_sk = titles.sk;
+    }
+    if info.title_cs.is_none() {
+        if let Some(cs) = titles.cs {
+            info.primary_title = Some(cs.clone());
+            info.title_cs = Some(cs);
+        }
+    }
+    info
+}
+
 fn first_array_item<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value.get(key)?.as_array()?.first()
 }
@@ -484,5 +624,98 @@ mod tests {
             info.title_candidates(),
             vec!["Alien", "Vetřelec", "Alien Covenant"]
         );
+    }
+
+    #[test]
+    fn wikidata_titles_make_czech_primary_for_cinemeta_info() {
+        let info = TitleInfo {
+            content_type: Some("movie".to_string()),
+            primary_title: Some("Do the Mæth".to_string()),
+            year: Some("2025".to_string()),
+            ..TitleInfo::default()
+        };
+        let titles = WikidataTitles {
+            cs: Some("Na plech".to_string()),
+            sk: Some("Na plech".to_string()),
+            en: Some("Do the Mæth".to_string()),
+        };
+
+        let merged = merge_wikidata_titles(info, Some(titles));
+
+        assert_eq!(merged.primary_title.as_deref(), Some("Na plech"));
+        assert_eq!(merged.title_cs.as_deref(), Some("Na plech"));
+        assert_eq!(merged.title_en.as_deref(), Some("Do the Mæth"));
+        assert_eq!(merged.title_candidates(), vec!["Na plech", "Do the Mæth"]);
+    }
+
+    #[test]
+    fn wikidata_titles_do_not_override_existing_czech_title() {
+        let info = TitleInfo {
+            primary_title: Some("Vetřelec".to_string()),
+            title_cs: Some("Vetřelec".to_string()),
+            ..TitleInfo::default()
+        };
+        let titles = WikidataTitles {
+            cs: Some("Votrelec".to_string()),
+            ..WikidataTitles::default()
+        };
+
+        let merged = merge_wikidata_titles(info, Some(titles));
+
+        assert_eq!(merged.title_cs.as_deref(), Some("Vetřelec"));
+        assert_eq!(merged.primary_title.as_deref(), Some("Vetřelec"));
+    }
+
+    #[tokio::test]
+    async fn imdb_lookup_without_tmdb_adds_wikidata_czech_title() {
+        use axum::{extract::Query, routing::get, Json, Router};
+        use std::collections::HashMap;
+
+        let app = Router::new()
+            .route(
+                "/meta/movie/tt34483589.json",
+                get(|| async {
+                    Json(json!({ "meta": { "name": "Do the Mæth", "year": "2025" } }))
+                }),
+            )
+            .route(
+                "/w/api.php",
+                get(|Query(params): Query<HashMap<String, String>>| async move {
+                    match params.get("action").map(String::as_str) {
+                        Some("query") => {
+                            assert_eq!(
+                                params.get("srsearch").map(String::as_str),
+                                Some("haswbstatement:P345=tt34483589")
+                            );
+                            Json(json!({ "query": { "search": [{ "title": "Q130739697" }] } }))
+                        }
+                        _ => Json(json!({ "entities": { "Q130739697": { "labels": {
+                            "cs": { "language": "cs", "value": "Na plech" },
+                            "sk": { "language": "sk", "value": "Na plech" },
+                            "en": { "language": "en", "value": "Do the Mæth" }
+                        } } } })),
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = MetadataClient::new(MetadataConfig {
+            cinemeta_url: base.clone(),
+            ..MetadataConfig::default()
+        })
+        .with_wikidata_url(Some(format!("{base}/w/api.php")));
+
+        let info = client
+            .lookup_imdb("movie", "tt34483589")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(info.primary_title.as_deref(), Some("Na plech"));
+        assert_eq!(info.title_cs.as_deref(), Some("Na plech"));
+        assert_eq!(info.title_en.as_deref(), Some("Do the Mæth"));
+        assert_eq!(info.year.as_deref(), Some("2025"));
     }
 }

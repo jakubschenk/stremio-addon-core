@@ -52,8 +52,15 @@ static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static SEASON_EPISODE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?iu)(?:^|[^\p{L}\p{N}])(?:(?:s|season\s*)(\d{1,2})[^\p{L}\p{N}]*(?:e|ep|episode\s*)(\d{1,3})|(\d{1,2})[^\p{L}\p{N}]*(?:x|×)[^\p{L}\p{N}]*(\d{1,3}))(?:[^\p{L}\p{N}]|$)")
+    // `(?:e\d{1,3})*` accepts double episodes such as `S01E05E06`.
+    Regex::new(r"(?iu)(?:^|[^\p{L}\p{N}])(?:(?:s|season\s*)(\d{1,2})[^\p{L}\p{N}]*(?:e|ep|episode\s*)(\d{1,3})(?:e\d{1,3})*|(\d{1,2})[^\p{L}\p{N}]*(?:x|×)[^\p{L}\p{N}]*(\d{1,3}))(?:[^\p{L}\p{N}]|$)")
         .expect("valid regex")
+});
+static CZECH_SEASON_EPISODE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?iu)(?:^|[^\p{L}\p{N}])(\d{1,2})\.\s*s[ée]ri[ea][^\p{L}\p{N}]{0,5}(\d{1,3})\.\s*d[ií]l",
+    )
+    .expect("valid regex")
 });
 static EPISODE_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?iu)(?:^|[^\p{L}\p{N}])(?:e|ep|episode|#|part|pt)[^\p{L}\p{N}]*(\d{1,3})(?:[^\p{L}\p{N}]|$)").expect("valid regex")
@@ -133,13 +140,21 @@ struct QualityLabel {
 /// Parse filename metadata commonly used by adapters in one pass.
 pub fn parse_filename(filename: &str) -> ParsedFilename {
     let view = FilenameView::new(filename);
-    let year = parse_year(filename);
+    let year_match = release_year_match(filename);
+    let year = year_match.map(|(_, year)| year);
     let (season, episode) = parse_season_episode_parts(filename);
     let quality = infer_quality_label(&view);
     let quality_rank = quality.as_deref().and_then(release_quality_rank);
+    let boundary = [
+        year_match.map(|(start, _)| start),
+        season_episode_start(filename),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
 
     ParsedFilename {
-        title: parsed_title(filename, year, season),
+        title: parsed_title(filename, boundary),
         year,
         season,
         episode,
@@ -149,12 +164,65 @@ pub fn parse_filename(filename: &str) -> ParsedFilename {
     }
 }
 
-/// Parse a 4-digit year from a filename.
+/// Parse the release year from a filename.
+///
+/// The last year-like number wins and one at the very start is ignored, so
+/// titles that contain a year (`1917 (2019)`, `Blade Runner 2049 2017`,
+/// `2001.A.Space.Odyssey.1968`) report their release year.
 pub fn parse_year(filename: &str) -> Option<i32> {
-    YEAR_RE
+    release_year_match(filename).map(|(_, year)| year)
+}
+
+/// Byte offset and value of the release year, see [`parse_year`].
+fn release_year_match(filename: &str) -> Option<(usize, i32)> {
+    let mut found = None;
+    let mut search_from = 0;
+    while let Some(captures) = YEAR_RE.captures_at(filename, search_from) {
+        let Some(year) = captures.get(1) else {
+            break;
+        };
+        if year.start() > 0 {
+            if let Ok(value) = year.as_str().parse() {
+                found = Some((year.start(), value));
+            }
+        }
+        // Restart right after the digits so the separator before the next
+        // year is not consumed by this match.
+        search_from = year.end();
+    }
+    found
+}
+
+/// Every year-like number in `value`, including one at the start.
+pub(crate) fn year_candidates(value: &str) -> Vec<i32> {
+    let mut years = Vec::new();
+    let mut search_from = 0;
+    while let Some(captures) = YEAR_RE.captures_at(value, search_from) {
+        let Some(year) = captures.get(1) else {
+            break;
+        };
+        if let Ok(parsed) = year.as_str().parse() {
+            years.push(parsed);
+        }
+        search_from = year.end();
+    }
+    years
+}
+
+fn season_episode_start(filename: &str) -> Option<usize> {
+    SEASON_EPISODE_RE
         .captures(filename)
-        .and_then(|captures| captures.get(1))
-        .and_then(|value| value.as_str().parse().ok())
+        .or_else(|| CZECH_SEASON_EPISODE_RE.captures(filename))
+        .and_then(|captures| captures.get(0))
+        .map(|matched| {
+            // The match may start with the separator before the marker.
+            let text = matched.as_str();
+            matched.start()
+                + (text.len()
+                    - text
+                        .trim_start_matches(|c: char| !c.is_alphanumeric())
+                        .len())
+        })
 }
 
 /// Parse season+episode, where both parts are present, or return None.
@@ -179,6 +247,13 @@ pub fn parse_season_episode_parts(filename: &str) -> (Option<u32>, Option<u32>) 
             }
             return (season.as_str().parse().ok(), episode);
         }
+    }
+
+    if let Some(caps) = CZECH_SEASON_EPISODE_RE.captures(filename) {
+        return (
+            caps.get(1).and_then(|value| value.as_str().parse().ok()),
+            caps.get(2).and_then(|value| value.as_str().parse().ok()),
+        );
     }
 
     if let Some(caps) = EPISODE_ONLY_RE.captures(filename) {
@@ -434,22 +509,8 @@ pub fn parsed_title_for_ranking(
     }
 }
 
-fn parsed_title(filename: &str, year: Option<i32>, season: Option<u32>) -> Option<String> {
-    let mut boundary = filename.len();
-    let filename_lower = filename.to_lowercase();
-    for needle in [
-        year.map(|year| year.to_string()),
-        season.map(|season| format!("s{season:02}")),
-        season.map(|season| format!("{season:02}x")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(index) = filename_lower.find(&needle.to_lowercase()) {
-            boundary = boundary.min(index);
-        }
-    }
-
+fn parsed_title(filename: &str, boundary: Option<usize>) -> Option<String> {
+    let boundary = boundary.unwrap_or(filename.len());
     let candidate = clean_title(&filename[..boundary]);
     (!candidate.is_empty()).then_some(candidate)
 }
@@ -831,5 +892,40 @@ mod tests {
         assert_eq!(parse_season_episode("S01E02"), Some((1, 2)));
         assert_eq!(parse_season_episode("01x10"), Some((1, 10)));
         assert_eq!(parse_season_episode("E 03"), Some((1, 3)));
+    }
+
+    #[test]
+    fn release_year_skips_years_that_belong_to_the_title() {
+        assert_eq!(parse_year("1917 (2019) 1080p cz sk dab.mkv"), Some(2019));
+        assert_eq!(parse_year("Blade Runner 2049 2017 CZ.mkv"), Some(2017));
+        assert_eq!(
+            parse_year("2001.A.Space.Odyssey.1968.2160p.REMUX.mkv"),
+            Some(1968)
+        );
+        assert_eq!(parse_year("1917.mkv"), None);
+        assert_eq!(parse_year("Matrix (1999) 1080p.mkv"), Some(1999));
+
+        let parsed = parse_filename("Blade Runner 2049 2017 CZ.mkv");
+        assert_eq!(parsed.title.as_deref(), Some("blade runner 2049"));
+        assert_eq!(
+            parse_filename("1917 (2019) 1080p.mkv").title.as_deref(),
+            Some("1917")
+        );
+    }
+
+    #[test]
+    fn episode_markers_cut_the_title_and_parse_variants() {
+        let parsed = parse_filename("Hvezdna brana - 4x10 - Bezpecnost CZ.avi");
+        assert_eq!(parsed.title.as_deref(), Some("hvezdna brana"));
+        assert_eq!((parsed.season, parsed.episode), (Some(4), Some(10)));
+
+        assert_eq!(
+            parse_season_episode("Show.S01E05E06.1080p.mkv"),
+            Some((1, 5))
+        );
+        assert_eq!(
+            parse_season_episode("Hvězdná brána 4. série 10. díl.avi"),
+            Some((4, 10))
+        );
     }
 }

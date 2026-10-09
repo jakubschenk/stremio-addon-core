@@ -45,21 +45,23 @@ pub fn webshare_queries(input: &QueryInput) -> Vec<String> {
 }
 
 fn title_year_episode_queries(input: &QueryInput) -> Vec<String> {
-    let titles = dedupe_non_empty(input.titles.clone());
+    // Webshare search ignores case and accents, so "Pelíšky" and "Pelisky"
+    // return the same page; ligatures like "Mæth"/"Maeth" do not, so keep them.
+    let mut seen = std::collections::HashSet::new();
+    let titles = dedupe_non_empty(input.titles.clone())
+        .into_iter()
+        .filter(|title| seen.insert(accent_fold_key(title)))
+        .collect::<Vec<_>>();
     if input.content_type.as_deref() == Some("series") {
         let (Some(season), Some(episode)) = (input.season, input.episode) else {
             return Vec::new();
         };
         let season = format!("{season:02}");
         let episode = format!("{episode:02}");
+        // `NNxNN` returns exactly the `SNNENN` result set on Webshare.
         return titles
             .into_iter()
-            .flat_map(|title| {
-                [
-                    format!("{title} S{season}E{episode}"),
-                    format!("{title} {season}x{episode}"),
-                ]
-            })
+            .map(|title| format!("{title} S{season}E{episode}"))
             .collect();
     }
 
@@ -153,6 +155,31 @@ pub fn select_search_titles(
     } else {
         dedupe_non_empty(titles)
     }
+}
+
+/// Case- and accent-insensitive key for providers whose search ignores both,
+/// so `Perníkový táta` and `pernikovy tata` count as one query.
+pub fn search_fold_key(value: &str) -> String {
+    let trimmed = value.trim();
+    ascii_fold_latin(trimmed)
+        .unwrap_or_else(|| trimmed.to_string())
+        .to_lowercase()
+}
+
+/// Lowercase key that folds single-letter accents but keeps ligatures.
+fn accent_fold_key(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|char| {
+            let mut buffer = [0; 4];
+            match ascii_fold_latin(char.encode_utf8(&mut buffer)) {
+                Some(folded) if folded.chars().count() == 1 => folded,
+                _ => char.to_string(),
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
 }
 
 fn ascii_fold_latin(value: &str) -> Option<String> {
@@ -260,10 +287,7 @@ mod tests {
             ..QueryInput::default()
         };
 
-        assert_eq!(
-            webshare_queries(&input),
-            vec!["Breaking Bad S01E02", "Breaking Bad 01x02"]
-        );
+        assert_eq!(webshare_queries(&input), vec!["Breaking Bad S01E02"]);
     }
 
     #[test]
@@ -318,6 +342,40 @@ mod tests {
         assert_eq!(
             select_search_titles(&info, None, None),
             vec!["Hvězdná brána", "Stargate SG-1", "Hvezdna brana"]
+        );
+    }
+
+    #[test]
+    fn search_fold_key_ignores_case_and_czech_diacritics() {
+        assert_eq!(search_fold_key(" Perníkový Táta "), "pernikovy tata");
+        assert_eq!(search_fold_key("PERNIKOVY TATA"), "pernikovy tata");
+        assert_eq!(search_fold_key("Na plech"), search_fold_key("Na Plech"));
+    }
+
+    #[test]
+    fn webshare_queries_skip_accent_duplicates_but_keep_ligatures() {
+        let input = QueryInput {
+            content_type: Some("movie".to_string()),
+            titles: vec![
+                "Pelíšky".to_string(),
+                "Pelisky".to_string(),
+                "Do the Mæth".to_string(),
+                "Do the Maeth".to_string(),
+            ],
+            year: Some("1999".to_string()),
+            ..QueryInput::default()
+        };
+
+        assert_eq!(
+            webshare_queries(&input),
+            vec![
+                "Pelíšky",
+                "Do the Mæth",
+                "Do the Maeth",
+                "Pelíšky 1999",
+                "Do the Mæth 1999",
+                "Do the Maeth 1999"
+            ]
         );
     }
 }
